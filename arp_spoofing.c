@@ -13,6 +13,8 @@
 #include <netdb.h>
 #include <net/if.h>
 
+#define SNAP_LEN 1518
+
 struct sniff_arp {
         u_char  ether_dhost[6];    /* destination host address */
         u_char  ether_shost[6];    /* source host address */
@@ -32,37 +34,30 @@ struct sniff_arp {
 int s_getIpAddress (const char * ifr, unsigned char * out);
 char *getMAC(const char *ip, struct sniff_arp * arp_packet);
 
-void show_data (const struct sniff_arp *arp_packet) {
-	int i, tmp;
+void show_data (const u_char * packet) {
+	int i, tmp=0;
 
-	char src_ip[100], dst_ip[100];
+	printf("Data Code : \n ");
+	for (i=0; i<42; i++) {
+		printf("%.2x ", *(packet+i)&0xff);
+		tmp++;
 
-	inet_ntop(AF_INET, &(arp_packet->arp_sip), src_ip, 100);
-	inet_ntop(AF_INET, &(arp_packet->arp_dip), dst_ip, 100);
+		if (tmp%16 == 0)
+			printf("\n");
+		if (tmp%8 == 0)
+			printf(" ");
+	}
 
-	printf("dhost : \n ");
-        for (i=0; i<6; i++) {
-                printf("%02x ", arp_packet->ether_dhost[i]);
-        }
-	printf("\n");
-	printf("shost : \n ");
-        for (i=0; i<6; i++) {
-                printf("%02x ", arp_packet->ether_shost[i]);
-        }
-        printf("\n");
-	printf("ethertype : \n ");
-        printf("%04x", ntohs(arp_packet->ether_type));
 	printf("\n");
 
-	printf("Src_ip : %s\n", src_ip);
-	printf("Dest_ip : %s\n", dst_ip);
-	printf("\n");
+
 
 }
 
 void create_arp (struct sniff_arp * arp_packet, char *dev, char *vip, char *dip) {
         char *sip = (char*)calloc(sizeof(char), 4);
         u_char addr[4] = {0};
+        int i;
 
         if (s_getIpAddress(dev, addr) > 0) {  
                 sprintf(sip, "%d.%d.%d.%d", (int)addr[0], (int)addr[1], (int)addr[2], (int)addr[3]);  
@@ -73,7 +68,7 @@ void create_arp (struct sniff_arp * arp_packet, char *dev, char *vip, char *dip)
 
         getMAC(sip, arp_packet);
 
-        arp_packet->ether_type = htons(0x8060);
+        arp_packet->ether_type = htons(0x0806);
         arp_packet->arp_htype = htons(0x0001);
         arp_packet->arp_p = htons(0x0800);
         arp_packet->arp_opcode= htons(0x0001);
@@ -95,6 +90,8 @@ int main(int argc, char **argv) {
         bpf_u_int32 mask;
         bpf_u_int32 net;
 
+        u_char packet[256];
+
         if (argc == 4) {
                 dev = argv[1];
                 vip = argv[2];
@@ -113,10 +110,21 @@ int main(int argc, char **argv) {
                 mask = 0;
         }
 
+	handle = pcap_open_live (dev, SNAP_LEN, 1, 1000, errbuf);
+	if (handle == NULL) {
+		fprintf(stderr, "Couldn't open device %s: %s\n", dev, errbuf);
+		exit(EXIT_FAILURE);
+	}
 
-        printf("Device: %s\n", dev);
         create_arp(arp_packet, dev, vip, dip);
-        
+
+        memcpy(packet, arp_packet, 42);
+
+        /* Send down the packet */
+        if (pcap_sendpacket(handle, packet, 42 /* size */) != 0) {
+                fprintf(stderr,"\nError sending the packet: \n", pcap_geterr(handle));
+                return;
+        }
 
 
 }
