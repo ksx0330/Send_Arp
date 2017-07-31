@@ -52,10 +52,8 @@ char *getMAC(const char *ip, struct sniff_arp * arp_packet){
                                         printf("getnameinfo() failed: %s\n", gai_strerror(s));
                                         return NULL;
                                 }
-                                printf("address: %s\n", host);
                                 if(strcmp(host, ip) == 0){
                                         ifa_name = ifa->ifa_name;
-                                        printf("matching interface name: %s\n", ifa_name);
                                 }
                         }
                 }
@@ -71,12 +69,22 @@ char *getMAC(const char *ip, struct sniff_arp * arp_packet){
                         for (i=0; i<=5; i++) {
                                 sprintf(mac_addr, "%02x", *(ptr+i));
                                 arp_packet->arp_smhost[i] = *(ptr+i);
+                                arp_packet->ether_shost[i] = *(ptr+i);
+                                arp_packet->ether_dhost[i] = 0xff;
+                                printf("%02x\n", arp_packet->ether_dhost[i]);
                         }
                         break;
                 }
         }
         freeifaddrs(ifaddr);
 }
+
+void create_arp (struct sniff_arp * arp_packet, char *sip, char *dip) {
+        getMAC(sip, arp_packet);
+
+
+}
+
 int main(int argc, char **argv) {
         struct sniff_arp * arp_packet =  malloc(sizeof(struct sniff_arp));
         char *dev = NULL;
@@ -107,10 +115,8 @@ int main(int argc, char **argv) {
         }
 
         printf("Device: %s\n", dev);
-        getMAC(sip, macaddr);
+        create_arp(arp_packet, sip, dip);
         
-
-  
 
 
 }
