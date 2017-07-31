@@ -6,10 +6,12 @@
 #include <errno.h>
 #include <sys/types.h>
 #include <sys/socket.h>
+#include <sys/ioctl.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
 #include <ifaddrs.h>
 #include <netdb.h>
+#include <net/if.h>
 
 struct sniff_arp {
         u_char  ether_dhost[6];    /* destination host address */
@@ -26,6 +28,116 @@ struct sniff_arp {
         u_char arp_dmhost[6]; /*target mac address*/
         struct in_addr arp_dip; /*target ip address*/
 };
+
+int s_getIpAddress (const char * ifr, unsigned char * out);
+char *getMAC(const char *ip, struct sniff_arp * arp_packet);
+
+void show_data (const struct sniff_arp *arp_packet) {
+	int i, tmp;
+
+	char src_ip[100], dst_ip[100];
+
+	inet_ntop(AF_INET, &(arp_packet->arp_sip), src_ip, 100);
+	inet_ntop(AF_INET, &(arp_packet->arp_dip), dst_ip, 100);
+
+	printf("dhost : \n ");
+        for (i=0; i<6; i++) {
+                printf("%02x ", arp_packet->ether_dhost[i]);
+        }
+	printf("\n");
+	printf("shost : \n ");
+        for (i=0; i<6; i++) {
+                printf("%02x ", arp_packet->ether_shost[i]);
+        }
+        printf("\n");
+	printf("ethertype : \n ");
+        printf("%04x", ntohs(arp_packet->ether_type));
+	printf("\n");
+
+	printf("Src_ip : %s\n", src_ip);
+	printf("Dest_ip : %s\n", dst_ip);
+	printf("\n");
+
+}
+
+void create_arp (struct sniff_arp * arp_packet, char *dev, char *vip, char *dip) {
+        char *sip = (char*)calloc(sizeof(char), 4);
+        u_char addr[4] = {0};
+
+        if (s_getIpAddress(dev, addr) > 0) {  
+                sprintf(sip, "%d.%d.%d.%d", (int)addr[0], (int)addr[1], (int)addr[2], (int)addr[3]);  
+        }
+
+        inet_pton(AF_INET, sip, &(arp_packet->arp_sip));
+        inet_pton(AF_INET, vip, &(arp_packet->arp_dip));
+
+        getMAC(sip, arp_packet);
+
+        arp_packet->ether_type = htons(0x8060);
+        arp_packet->arp_htype = htons(0x0001);
+        arp_packet->arp_p = htons(0x0800);
+        arp_packet->arp_opcode= htons(0x0001);
+
+        arp_packet->arp_hsize = 0x6;
+        arp_packet->arp_psize = 0x4;
+
+        show_data(arp_packet);
+}
+
+int main(int argc, char **argv) {
+        struct sniff_arp * arp_packet =  malloc(sizeof(struct sniff_arp));
+        char *dev = NULL;
+        char *vip = NULL;
+        char *dip = NULL;
+        char errbuf[PCAP_ERRBUF_SIZE];
+        pcap_t *handle;
+
+        bpf_u_int32 mask;
+        bpf_u_int32 net;
+
+        if (argc == 4) {
+                dev = argv[1];
+                vip = argv[2];
+                dip = argv[3];
+        } else if (argc > 4) {
+                fprintf(stderr, "error: unrecognized command-line options\n");
+                exit(EXIT_FAILURE);
+        } else {
+                fprintf(stderr, "error: do not matched argument\n");
+                exit(EXIT_FAILURE);
+        }
+
+        if (pcap_lookupnet(dev, &net, &mask, errbuf) == -1) {
+                fprintf(stderr, "Couldn't get netmask for device %s: %s\n", dev, errbuf);
+                net = 0;
+                mask = 0;
+        }
+
+
+        printf("Device: %s\n", dev);
+        create_arp(arp_packet, dev, vip, dip);
+        
+
+
+}
+
+int s_getIpAddress (const char * ifr, unsigned char * out) {  
+    int sockfd;  
+    struct ifreq ifrq;  
+    struct sockaddr_in * sin;  
+    sockfd = socket(AF_INET, SOCK_DGRAM, 0);  
+    strcpy(ifrq.ifr_name, ifr);  
+    if (ioctl(sockfd, SIOCGIFADDR, &ifrq) < 0) {  
+        perror( "ioctl() SIOCGIFADDR error");  
+        return -1;  
+    }  
+    sin = (struct sockaddr_in *)&ifrq.ifr_addr;  
+    memcpy (out, (void*)&sin->sin_addr, sizeof(sin->sin_addr));  
+  
+    close(sockfd);  
+  
+    return 4;  
+}
 
 char *getMAC(const char *ip, struct sniff_arp * arp_packet){
         struct ifaddrs *ifaddr, *ifa;
@@ -71,52 +183,9 @@ char *getMAC(const char *ip, struct sniff_arp * arp_packet){
                                 arp_packet->arp_smhost[i] = *(ptr+i);
                                 arp_packet->ether_shost[i] = *(ptr+i);
                                 arp_packet->ether_dhost[i] = 0xff;
-                                printf("%02x\n", arp_packet->ether_dhost[i]);
                         }
                         break;
                 }
         }
         freeifaddrs(ifaddr);
-}
-
-void create_arp (struct sniff_arp * arp_packet, char *sip, char *dip) {
-        getMAC(sip, arp_packet);
-
-
-}
-
-int main(int argc, char **argv) {
-        struct sniff_arp * arp_packet =  malloc(sizeof(struct sniff_arp));
-        char *dev = NULL;
-        char *sip = NULL;
-        char *dip = NULL;
-        char errbuf[PCAP_ERRBUF_SIZE];
-        pcap_t *handle;
-
-        bpf_u_int32 mask;
-        bpf_u_int32 net;
-
-        if (argc == 4) {
-                dev = argv[1];
-                sip = argv[2];
-                dip = argv[3];
-        } else if (argc > 4) {
-                fprintf(stderr, "error: unrecognized command-line options\n");
-                exit(EXIT_FAILURE);
-        } else {
-                fprintf(stderr, "error: do not matched argument\n");
-                exit(EXIT_FAILURE);
-        }
-
-        if (pcap_lookupnet(dev, &net, &mask, errbuf) == -1) {
-                fprintf(stderr, "Couldn't get netmask for device %s: %s\n", dev, errbuf);
-                net = 0;
-                mask = 0;
-        }
-
-        printf("Device: %s\n", dev);
-        create_arp(arp_packet, sip, dip);
-        
-
-
-}
+} 
