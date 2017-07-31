@@ -6,38 +6,16 @@
 #include <errno.h>
 #include <sys/types.h>
 #include <sys/socket.h>
-#include <sys/ioctl.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
-#include <net/if.h>
-
-
-struct sniff_ethernet {
-        u_char  ether_dhost[6];    /* destination host address */
-        u_char  ether_shost[6];    /* source host address */
-        u_short ether_type;                     /* IP? ARP? RARP? etc */
-};
-
-/* IP header */
-struct sniff_ip {
-        u_char  ip_vhl;                 /* version << 4 | header length >> 2 */
-        u_char  ip_tos;                 /* type of service */
-        u_short ip_len;                 /* total length */
-        u_short ip_id;                  /* identification */
-        u_short ip_off;                 /* fragment offset field */
-        #define IP_RF 0x8000            /* reserved fragment flag */
-        #define IP_DF 0x4000            /* dont fragment flag */
-        #define IP_MF 0x2000            /* more fragments flag */
-        #define IP_OFFMASK 0x1fff       /* mask for fragmenting bits */
-        u_char  ip_ttl;                 /* time to live */
-        u_char  ip_p;                   /* protocol */
-        u_short ip_sum;                 /* checksum */
-        struct  in_addr ip_src,ip_dst;  /* source and dest address */
-};
-#define IP_HL(ip)               (((ip)->ip_vhl) & 0x0f)
-#define IP_V(ip)                (((ip)->ip_vhl) >> 4)
+#include <ifaddrs.h>
+#include <netdb.h>
 
 struct sniff_arp {
+        u_char  ether_dhost[6];    /* destination host address */
+        u_char  ether_shost[6];    /* source host address */
+        u_short ether_type;        /* IP? ARP? RARP? etc */
+
         u_short arp_htype; /*hardware type*/
         u_short arp_p; /*protocol*/
         u_char arp_hsize; /*hardware size*/
@@ -49,51 +27,77 @@ struct sniff_arp {
         struct in_addr arp_dip; /*target ip address*/
 };
 
-int s_getIpAddress (const char * ifr, unsigned char * out) {  
-    int sockfd;  
-    struct ifreq ifrq;  
-    struct sockaddr_in * sin;  
-    sockfd = socket(AF_INET, SOCK_DGRAM, 0);  
-    strcpy(ifrq.ifr_name, ifr);  
-    if (ioctl(sockfd, SIOCGIFADDR, &ifrq) < 0) {  
-        perror( "ioctl() SIOCGIFADDR error");  
-        return -1;  
-    }  
-    sin = (struct sockaddr_in *)&ifrq.ifr_addr;  
-    memcpy (out, (void*)&sin->sin_addr, sizeof(sin->sin_addr));  
-  
-    close(sockfd);  
-  
-    return 4;  
-} 
+char *getMAC(const char *ip, struct sniff_arp * arp_packet){
+        struct ifaddrs *ifaddr, *ifa;
+        int family, s, i;
+        char host[NI_MAXHOST];
+        struct sockaddr *sdl;
+        unsigned char *ptr;
+        char *ifa_name;
+        char *mac_addr = (char*)calloc(sizeof(char), 18);
 
+        if (getifaddrs(&ifaddr) == -1) {
+                perror("getifaddrs");
+                return NULL;
+        }
+
+        //iterate to find interface name for given server_ip
+        for (ifa = ifaddr; ifa != NULL; ifa = ifa->ifa_next) {
+                if (ifa->ifa_addr != NULL) {
+                        family = ifa->ifa_addr->sa_family;
+                        if(family == AF_INET) {
+                                s = getnameinfo(ifa->ifa_addr, (family == AF_INET)?sizeof(struct sockaddr_in):sizeof(struct sockaddr_in6),
+                                host, NI_MAXHOST, NULL, 0, NI_NUMERICHOST);
+                                if (s != 0) {
+                                        printf("getnameinfo() failed: %s\n", gai_strerror(s));
+                                        return NULL;
+                                }
+                                printf("address: %s\n", host);
+                                if(strcmp(host, ip) == 0){
+                                        ifa_name = ifa->ifa_name;
+                                        printf("matching interface name: %s\n", ifa_name);
+                                }
+                        }
+                }
+        }
+
+        //iterate to find corresponding ethernet address
+        for (ifa = ifaddr; ifa != NULL; ifa = ifa->ifa_next) {
+                family = ifa->ifa_addr->sa_family;
+                if(family == PF_PACKET && strcmp(ifa_name, ifa->ifa_name) == 0) {
+                        sdl = (struct sockaddr *)(ifa->ifa_addr);
+                        ptr = (unsigned char *)sdl->sa_data;
+                        ptr += 10;
+                        for (i=0; i<=5; i++) {
+                                sprintf(mac_addr, "%02x", *(ptr+i));
+                                arp_packet->arp_smhost[i] = *(ptr+i);
+                        }
+                        break;
+                }
+        }
+        freeifaddrs(ifaddr);
+}
 int main(int argc, char **argv) {
-        char arp_packet[42];
+        struct sniff_arp * arp_packet =  malloc(sizeof(struct sniff_arp));
         char *dev = NULL;
+        char *sip = NULL;
+        char *dip = NULL;
         char errbuf[PCAP_ERRBUF_SIZE];
         pcap_t *handle;
-
-        struct in_addr addr;
-        char *maskp;
-        char *netp;
 
         bpf_u_int32 mask;
         bpf_u_int32 net;
 
-        struct ifreq ifr;
-        char ipstr[40];
-        int s;
-
-        if (argc == 2) {
+        if (argc == 4) {
                 dev = argv[1];
-        } else if (argc > 2) {
+                sip = argv[2];
+                dip = argv[3];
+        } else if (argc > 4) {
                 fprintf(stderr, "error: unrecognized command-line options\n");
+                exit(EXIT_FAILURE);
         } else {
-                dev = pcap_lookupdev(errbuf);
-                if (dev == NULL) {
-                        fprintf(stderr, "Couldn't find default deviceL %s\n", errbuf);
-                        exit(EXIT_FAILURE);
-                }
+                fprintf(stderr, "error: do not matched argument\n");
+                exit(EXIT_FAILURE);
         }
 
         if (pcap_lookupnet(dev, &net, &mask, errbuf) == -1) {
@@ -102,23 +106,11 @@ int main(int argc, char **argv) {
                 mask = 0;
         }
 
-        addr.s_addr = net;
-        netp = inet_ntoa(addr);
-
-        printf("IP : %s\n", netp);
-
-        addr.s_addr = mask;
-        maskp = inet_ntoa(addr);
-
-        printf("MASK : %s\n", maskp);
-
         printf("Device: %s\n", dev);
+        getMAC(sip, macaddr);
+        
 
-    unsigned char addrs[4] = {0,};  
   
-    if (s_getIpAddress(dev, addrs) > 0) {  
-        printf("ip addr:=%d.%d.%d.%d", (int)addrs[0], (int)addrs[1], (int)addrs[2], (int)addrs[3]);  
-    }  
 
 
 }
