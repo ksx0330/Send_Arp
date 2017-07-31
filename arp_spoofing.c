@@ -38,7 +38,7 @@ void show_data (const u_char * packet) {
 	int i, tmp=0;
 
 	printf("Data Code : \n ");
-	for (i=0; i<42; i++) {
+	for (i=0; i<46; i++) {
 		printf("%.2x ", *(packet+i)&0xff);
 		tmp++;
 
@@ -50,11 +50,9 @@ void show_data (const u_char * packet) {
 
 	printf("\n");
 
-
-
 }
 
-void create_arp (struct sniff_arp * arp_packet, char *dev, char *vip, char *dip) {
+void create_arp (struct sniff_arp * arp_packet, char *dev, u_char *vip, u_char *dip) {
         char *sip = (char*)calloc(sizeof(char), 4);
         u_char addr[4] = {0};
         int i;
@@ -63,8 +61,8 @@ void create_arp (struct sniff_arp * arp_packet, char *dev, char *vip, char *dip)
                 sprintf(sip, "%d.%d.%d.%d", (int)addr[0], (int)addr[1], (int)addr[2], (int)addr[3]);  
         }
 
-        inet_pton(AF_INET, sip, &(arp_packet->arp_sip));
-        inet_pton(AF_INET, vip, &(arp_packet->arp_dip));
+        for (i=0; i<6; i++)
+                arp_packet->arp_dmhost[i] = 0xff;
 
         getMAC(sip, arp_packet);
 
@@ -76,21 +74,43 @@ void create_arp (struct sniff_arp * arp_packet, char *dev, char *vip, char *dip)
         arp_packet->arp_hsize = 0x6;
         arp_packet->arp_psize = 0x4;
 
-        show_data(arp_packet);
+        inet_pton(AF_INET, sip, &(arp_packet->arp_sip));
+        inet_pton(AF_INET, vip, &(arp_packet->arp_dip));
 }
+
+int check_reply (const u_char *common_packet, u_char *vip, u_char *dip, u_char *vmac) {
+        const struct sniff_arp * arp_reply;
+        u_char * sip;
+        u_char * reply_ip;
+
+        arp_reply = (struct sniff_arp *)(common_packet);
+        inet_ntop(AF_INET, vip, &sip, 6);
+        inet_ntop(AF_INET, &(arp_reply->arp_sip), &reply_ip, 6);
+
+        if (arp_reply->ether_type == 0x0608) {
+                if (arp_reply->arp_opcode == htons(0x0002)) {
+                        memcpy(vmac, arp_reply->arp_smhost, 6);
+                        return 4;
+                }
+        }
+}       
 
 int main(int argc, char **argv) {
         struct sniff_arp * arp_packet =  malloc(sizeof(struct sniff_arp));
         char *dev = NULL;
-        char *vip = NULL;
-        char *dip = NULL;
+        u_char *vip = NULL;
+        u_char *dip = NULL;
         char errbuf[PCAP_ERRBUF_SIZE];
         pcap_t *handle;
+        struct pcap_pkthdr *header;
 
         bpf_u_int32 mask;
         bpf_u_int32 net;
 
         u_char packet[256];
+        const u_char *common_packet;
+        u_char vmac[6];
+        int i;
 
         if (argc == 4) {
                 dev = argv[1];
@@ -118,33 +138,48 @@ int main(int argc, char **argv) {
 
         create_arp(arp_packet, dev, vip, dip);
 
-        memcpy(packet, arp_packet, 42);
+        memcpy(packet, arp_packet, 46);
+        for (i=0; i<4; i++)
+                packet[38+i] = packet[40+i];
 
-        /* Send down the packet */
-        if (pcap_sendpacket(handle, packet, 42 /* size */) != 0) {
-                fprintf(stderr,"\nError sending the packet: \n", pcap_geterr(handle));
-                return;
+        show_data(packet);
+
+        while (1) {
+                /* Send down the packet */
+                if (pcap_sendpacket(handle, packet, 42 /* size */) != 0) {
+                        fprintf(stderr,"\nError sending the packet: \n", pcap_geterr(handle));
+                        return;
+                }
+
+                if (pcap_next_ex(handle, &header, &common_packet) > 0) {
+                        if (check_reply(common_packet, vip, dip, vmac) == 4)
+                                break; 
+                }
+
         }
+
+        printf("victim_MAC : %02x:%02x:%02x:%02x:%02x:%02x\n", vmac[0], vmac[1], vmac[2], vmac[3], vmac[4], vmac[5]);
 
 
 }
 
 int s_getIpAddress (const char * ifr, unsigned char * out) {  
-    int sockfd;  
-    struct ifreq ifrq;  
-    struct sockaddr_in * sin;  
-    sockfd = socket(AF_INET, SOCK_DGRAM, 0);  
-    strcpy(ifrq.ifr_name, ifr);  
-    if (ioctl(sockfd, SIOCGIFADDR, &ifrq) < 0) {  
-        perror( "ioctl() SIOCGIFADDR error");  
-        return -1;  
-    }  
-    sin = (struct sockaddr_in *)&ifrq.ifr_addr;  
-    memcpy (out, (void*)&sin->sin_addr, sizeof(sin->sin_addr));  
-  
-    close(sockfd);  
-  
-    return 4;  
+        int sockfd;  
+        struct ifreq ifrq;  
+        struct sockaddr_in * sin;  
+        sockfd = socket(AF_INET, SOCK_DGRAM, 0);  
+        strcpy(ifrq.ifr_name, ifr);  
+
+        if (ioctl(sockfd, SIOCGIFADDR, &ifrq) < 0) {  
+                perror( "ioctl() SIOCGIFADDR error");  
+                return -1;  
+        }  
+        sin = (struct sockaddr_in *)&ifrq.ifr_addr;  
+        memcpy (out, (void*)&sin->sin_addr, sizeof(sin->sin_addr));  
+
+        close(sockfd);  
+
+        return 4;  
 }
 
 char *getMAC(const char *ip, struct sniff_arp * arp_packet){
