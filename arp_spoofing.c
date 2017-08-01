@@ -80,18 +80,18 @@ void create_arp (struct sniff_arp * arp_packet, char *dev, u_char *vip, u_char *
 
 int check_reply (const u_char *common_packet, u_char *vip, u_char *dip, u_char *vmac) {
         const struct sniff_arp * arp_reply;
-        u_char * sip;
-        u_char * reply_ip;
+        u_char reply_ip[100];
 
         arp_reply = (struct sniff_arp *)(common_packet);
-        inet_ntop(AF_INET, vip, &sip, 6);
-        inet_ntop(AF_INET, &(arp_reply->arp_sip), &reply_ip, 6);
+        inet_ntop(AF_INET, &(arp_reply->arp_sip), reply_ip, 100);
 
         if (arp_reply->ether_type == 0x0608) {
-                if (arp_reply->arp_opcode == htons(0x0002)) {
-                        memcpy(vmac, arp_reply->arp_smhost, 6);
-                        return 4;
-                }
+		if (!strcmp(vip, reply_ip)) {
+		        if (arp_reply->arp_opcode == htons(0x0002)) {
+		                memcpy(vmac, arp_reply->arp_smhost, 6);
+		                return 4;
+		        }
+		}
         }
 }       
 
